@@ -9,7 +9,13 @@
 
 import logging
 import requests
+import urllib3
 from bs4 import BeautifulSoup
+
+# Сайт apps.mitso.by отдаёт неполную цепочку сертификатов (браузеры это прощают,
+# у них уже есть промежуточный сертификат в системном хранилище, а у чистого сервера
+# его нет). Поэтому отключаем проверку и глушим предупреждение об этом в логах.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_URL = "https://apps.mitso.by/frontend/web"
 INDEX_URL = f"{BASE_URL}/schedule/index"
@@ -32,7 +38,7 @@ class ScheduleFetchError(Exception):
 
 def _get_csrf_token(session: requests.Session) -> str:
     """Заходим на страницу расписания, чтобы получить сессионные куки и csrf-токен."""
-    resp = session.get(INDEX_URL, headers=HEADERS, timeout=15)
+    resp = session.get(INDEX_URL, headers=HEADERS, timeout=15, verify=False)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     meta = soup.find("meta", attrs={"name": "csrf-token"})
@@ -55,7 +61,7 @@ def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str, week:
         "ScheduleSearch[week]": week,
     }
 
-    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=HEADERS, timeout=15)
+    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=HEADERS, timeout=15, verify=False)
     resp.raise_for_status()
     return resp.text
 
@@ -113,3 +119,4 @@ if __name__ == "__main__":
         group_class="2611 MN",
     )
     print(json.dumps(schedule, ensure_ascii=False, indent=2))
+
