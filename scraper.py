@@ -63,8 +63,11 @@ def _get_csrf_token(session: requests.Session) -> str:
 def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str) -> str:
     """Делает POST-запрос от имени сессии и возвращает сырой HTML со ВСЕМИ неделями сразу.
 
-    Мы больше не передаём week в запрос: он всё равно не влияет на то, что
-    реально приходит от сервера (см. пояснение в шапке файла).
+    Поле ScheduleSearch[week] сайт, судя по всему, требует как обязательное
+    для валидации формы (без него не возвращает результат вообще). При этом
+    само его значение не влияет на то, что приходит в ответе — сайт всегда
+    присылает оба блока недель. Поэтому шлём фиксированное "0" просто чтобы
+    пройти валидацию.
     """
     session = requests.Session()
     csrf_token = _get_csrf_token(session)
@@ -75,6 +78,7 @@ def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str) -> st
         "ScheduleSearch[form]": form,
         "ScheduleSearch[kurse]": kurse,
         "ScheduleSearch[group_class]": group_class,
+        "ScheduleSearch[week]": "0",
     }
 
     resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=HEADERS, timeout=15, verify=False)
