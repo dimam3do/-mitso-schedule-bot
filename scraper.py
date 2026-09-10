@@ -29,6 +29,16 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# Отдельные заголовки для POST-запроса за самим расписанием: помечаем запрос как
+# AJAX (X-Requested-With), чтобы сайт вернул только выбранную неделю, а не
+# накопленную полную страницу со всеми неделями сразу.
+AJAX_HEADERS = {
+    **HEADERS,
+    "X-Requested-With": "XMLHttpRequest",
+    "Accept": "text/html, */*; q=0.01",
+    "Referer": GROUP_SCHEDULE_URL,
+}
+
 logger = logging.getLogger("scraper")
 
 
@@ -62,7 +72,7 @@ def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str, week:
     }
 
     logger.info("Запрос расписания с week=%s, payload=%s", week, payload)
-    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=HEADERS, timeout=15, verify=False)
+    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=AJAX_HEADERS, timeout=15, verify=False)
     resp.raise_for_status()
     return resp.text
 
