@@ -133,7 +133,7 @@
     content.textContent = 'Загружаю расписание…';
     refreshBtn.style.display = 'none';
     try {
-      const res = await fetch(/api/schedule${force ? '?force=true' : ''});
+      const res = await fetch(`/api/schedule${force ? '?force=true' : ''}`);
       if (!res.ok) throw new Error('Сервер вернул ошибку');
       const data = await res.json();
       renderSchedule(data.days);
