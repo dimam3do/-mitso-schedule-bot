@@ -21,11 +21,35 @@
     font-size: 20px;
     margin: 8px 0 16px;
   }
+  .week-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .week-tab {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    border-radius: 10px;
+    background: var(--tg-theme-secondary-bg-color, #e8e8ec);
+    color: var(--tg-theme-text-color, #1c1c1e);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: 0.6;
+  }
+  .week-tab.active {
+    background: var(--tg-theme-button-color, #2481cc);
+    color: var(--tg-theme-button-text-color, #ffffff);
+    opacity: 1;
+  }
   .day-card {
     background: var(--tg-theme-secondary-bg-color, #ffffff);
     border-radius: 14px;
     padding: 12px 14px;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
+    border-top: 3px solid var(--tg-theme-button-color, #2481cc);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
   }
   .day-title {
     font-weight: 600;
@@ -80,6 +104,12 @@
 </head>
 <body>
   <h1>Расписание</h1>
+
+  <div class="week-tabs">
+    <button class="week-tab active" id="tabCurrent" data-week="0">Текущая неделя</button>
+    <button class="week-tab" id="tabNext" data-week="1">Следующая неделя</button>
+  </div>
+
   <div id="content" class="state-msg">Загружаю расписание…</div>
   <button class="refresh-btn" id="refreshBtn" style="display:none;">Обновить</button>
 
@@ -92,6 +122,10 @@
 
   const content = document.getElementById('content');
   const refreshBtn = document.getElementById('refreshBtn');
+  const tabCurrent = document.getElementById('tabCurrent');
+  const tabNext = document.getElementById('tabNext');
+
+  let currentWeek = '0';
 
   function escapeHtml(str) {
     const div = document.createElement('div');
@@ -128,12 +162,20 @@
     }).join('');
   }
 
+  function setActiveTab(week) {
+    currentWeek = week;
+    tabCurrent.classList.toggle('active', week === '0');
+    tabNext.classList.toggle('active', week === '1');
+  }
+
   async function loadSchedule(force = false) {
     content.className = 'state-msg';
     content.textContent = 'Загружаю расписание…';
     refreshBtn.style.display = 'none';
     try {
-      const res = await fetch(`/api/schedule${force ? '?force=true' : ''}`);
+      const params = new URLSearchParams({ week: currentWeek });
+      if (force) params.set('force', 'true');
+      const res = await fetch(`/api/schedule?${params.toString()}`);
       if (!res.ok) throw new Error('Сервер вернул ошибку');
       const data = await res.json();
       renderSchedule(data.days);
@@ -144,6 +186,18 @@
       refreshBtn.style.display = 'block';
     }
   }
+
+  tabCurrent.addEventListener('click', () => {
+    if (currentWeek === '0') return;
+    setActiveTab('0');
+    loadSchedule();
+  });
+
+  tabNext.addEventListener('click', () => {
+    if (currentWeek === '1') return;
+    setActiveTab('1');
+    loadSchedule();
+  });
 
   refreshBtn.addEventListener('click', () => loadSchedule(true));
   loadSchedule();
