@@ -3,8 +3,21 @@
 
 Логика такая же, как у браузера:
 1. GET  /schedule/index         -> получаем сессионные куки и csrf-токен
-2. POST /schedule/group-schedule -> отправляем факультет/форму/курс/группу и получаем HTML с таблицей
-3. Разбираем HTML и превращаем в удобный JSON: список дней, в каждом список пар.
+2. POST /schedule/group-schedule -> отправляем факультет/форму/курс/группу и получаем HTML
+3. Разбираем HTML и превращаем в удобный JSON: список недель, в каждой список дней с парами.
+
+ВАЖНОЕ НАБЛЮДЕНИЕ (после отладки через DevTools):
+Сайт при КАЖДОМ запросе всегда возвращает ОБА блока расписания сразу —
+два отдельных контейнера с классом `.weekly-schedule`: один для текущей
+недели (id вида "schedule-Текущая-неделя"), другой для следующей
+(id вида "schedule-14-сентября-20-сентября"). Параметр
+`ScheduleSearch[week]`, который отправляет форма на сайте, влияет только
+на то, какой из двух уже отрисованных на сервере блоков сайт показывает
+пользователю через JS/CSS — сами данные всегда приходят оба сразу.
+
+Поэтому мы не пытаемся "просить" сайт отдать только одну неделю (это не
+работает), а разбираем оба блока `.weekly-schedule` по отдельности и сами
+выбираем нужный по порядковому номеру (0 — текущая, 1 — следующая).
 """
 
 import logging
@@ -29,16 +42,6 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Отдельные заголовки для POST-запроса за самим расписанием: помечаем запрос как
-# AJAX (X-Requested-With), чтобы сайт вернул только выбранную неделю, а не
-# накопленную полную страницу со всеми неделями сразу.
-AJAX_HEADERS = {
-    **HEADERS,
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "text/html, */*; q=0.01",
-    "Referer": GROUP_SCHEDULE_URL,
-}
-
 logger = logging.getLogger("scraper")
 
 
@@ -57,8 +60,12 @@ def _get_csrf_token(session: requests.Session) -> str:
     return meta["content"]
 
 
-def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str, week: str = "0") -> str:
-    """Делает POST-запрос от имени сессии и возвращает сырой HTML с расписанием."""
+def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str) -> str:
+    """Делает POST-запрос от имени сессии и возвращает сырой HTML со ВСЕМИ неделями сразу.
+
+    Мы больше не передаём week в запрос: он всё равно не влияет на то, что
+    реально приходит от сервера (см. пояснение в шапке файла).
+    """
     session = requests.Session()
     csrf_token = _get_csrf_token(session)
 
@@ -68,79 +75,100 @@ def fetch_schedule_html(fak: str, form: str, kurse: str, group_class: str, week:
         "ScheduleSearch[form]": form,
         "ScheduleSearch[kurse]": kurse,
         "ScheduleSearch[group_class]": group_class,
-        "ScheduleSearch[week]": week,
     }
 
-    logger.info("Запрос расписания с week=%s, payload=%s", week, payload)
-    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=AJAX_HEADERS, timeout=15, verify=False)
+    resp = session.post(GROUP_SCHEDULE_URL, data=payload, headers=HEADERS, timeout=15, verify=False)
     resp.raise_for_status()
     return resp.text
 
 
-def parse_schedule(html: str) -> list[dict]:
-    """Превращает HTML-страницу расписания в список дней с парами.
-
-    ВАЖНО: на сайте apps.mitso.by класс `.weekly-schedule` — это ОДИН общий
-    контейнер на всю неделю, внутри которого подряд идут заголовки <h2> с
-    названиями дней и таблицы <table> с парами для каждого дня. Раньше код
-    делал `block.find("h2")` / `block.find("table")` на этом единственном
-    контейнере, а .find() в BeautifulSoup возвращает только ПЕРВЫЙ найденный
-    элемент — поэтому всегда получался только понедельник.
-
-    Исправление: находим ВСЕ заголовки <h2> внутри .weekly-schedule и для
-    каждого берём таблицу, которая идёт сразу за ним (find_next_sibling или
-    find_next).
-    """
-    soup = BeautifulSoup(html, "html.parser")
+def _parse_week_block(block) -> list[dict]:
+    """Разбирает ОДИН контейнер .weekly-schedule (одну неделю) в список дней."""
     days = []
+    headers = block.find_all("h2")
+    tables = block.find_all("table")
 
-    headers = soup.select(".weekly-schedule h2")
-    logger.info("Найдено %d заголовков дней: %s", len(headers), [h.get_text(strip=True) for h in headers])
-    for header in headers:
-        day_title = header.get_text(strip=True)
-
-        # Ищем ближайшую таблицу, которая идёт после этого заголовка,
-        # но раньше следующего h2 (чтобы не залезть в чужой день).
-        table = header.find_next("table")
-
-        lessons = []
-        if table:
-            for row in table.select("tbody tr"):
-                cells = row.find_all("td")
-                if len(cells) < 3:
-                    continue
-                time_ = cells[0].get_text(strip=True)
-                subject = cells[1].get_text(" ", strip=True)
-                room = cells[2].get_text(strip=True)
-                if subject and "нет занятий" not in subject.lower():
-                    lessons.append({"time": time_, "subject": subject, "room": room})
-
-        days.append({"day": day_title, "lessons": lessons})
-
-    if not days:
-        raise ScheduleFetchError(
-            "Не нашёл ни одного дня в ответе сайта — вероятно, неверно указаны "
-            "fak/form/kurse/group_class, либо сайт изменил структуру страницы"
+    # На каждый день должен быть ровно один h2 (заголовок) и одна table (пары).
+    # Если вдруг их количество не совпадает — берём по минимальному количеству,
+    # чтобы не упасть, но логируем это как подозрительный случай.
+    if len(headers) != len(tables):
+        logger.warning(
+            "В одном блоке недели не совпадает число заголовков (%d) и таблиц (%d)",
+            len(headers), len(tables),
         )
+
+    for header, table in zip(headers, tables):
+        day_title = header.get_text(strip=True)
+        lessons = []
+        for row in table.select("tbody tr"):
+            cells = row.find_all("td")
+            if len(cells) < 3:
+                continue
+            time_ = cells[0].get_text(strip=True)
+            subject = cells[1].get_text(" ", strip=True)
+            room = cells[2].get_text(strip=True)
+            if subject and "нет занятий" not in subject.lower():
+                lessons.append({"time": time_, "subject": subject, "room": room})
+        days.append({"day": day_title, "lessons": lessons})
 
     return days
 
 
+def parse_all_weeks(html: str) -> list[list[dict]]:
+    """Возвращает список недель. Каждая неделя — список дней (как раньше).
+
+    weeks[0] — текущая неделя, weeks[1] — следующая (порядок как на сайте).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    week_blocks = soup.select(".weekly-schedule")
+
+    logger.info(
+        "Найдено %d блоков недель: %s",
+        len(week_blocks),
+        [b.get("id", "(без id)") for b in week_blocks],
+    )
+
+    if not week_blocks:
+        raise ScheduleFetchError(
+            "Не нашёл ни одного блока .weekly-schedule в ответе сайта — вероятно, неверно указаны "
+            "fak/form/kurse/group_class, либо сайт изменил структуру страницы"
+        )
+
+    weeks = [_parse_week_block(block) for block in week_blocks]
+    for i, week_days in enumerate(weeks):
+        logger.info("Неделя %d: %s", i, [d["day"] for d in week_days])
+
+    return weeks
+
+
 def get_schedule(fak: str, form: str, kurse: str, group_class: str, week: str = "0") -> list[dict]:
-    """Главная функция: сходить на сайт и вернуть готовое расписание."""
-    html = fetch_schedule_html(fak, form, kurse, group_class, week)
-    return parse_schedule(html)
+    """Главная функция: сходить на сайт и вернуть готовое расписание ОДНОЙ недели.
+
+    week: "0" — текущая неделя (первый блок на сайте), "1" — следующая (второй блок).
+    """
+    html = fetch_schedule_html(fak, form, kurse, group_class)
+    weeks = parse_all_weeks(html)
+
+    week_index = int(week)
+    if week_index >= len(weeks):
+        raise ScheduleFetchError(
+            f"Запрошена неделя с индексом {week_index}, но на сайте есть только {len(weeks)} недель(и)"
+        )
+
+    return weeks[week_index]
 
 
 if __name__ == "__main__":
     # Быстрая проверка вручную: python scraper.py
-    # Подставь сюда точные значения, которые ты видел(а) в Payload запроса group-schedule.
     import json
 
-    schedule = get_schedule(
-        fak="Экономический",
-        form="Dnevnaya",
-        kurse="1 kurs",
-        group_class="2611 MN",
-    )
-    print(json.dumps(schedule, ensure_ascii=False, indent=2))
+    for w in ("0", "1"):
+        schedule = get_schedule(
+            fak="Экономический",
+            form="Dnevnaya",
+            kurse="1 kurs",
+            group_class="2611 MN",
+            week=w,
+        )
+        print(f"--- Неделя {w} ---")
+        print(json.dumps(schedule, ensure_ascii=False, indent=2))
